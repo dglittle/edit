@@ -1,0 +1,562 @@
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link
+    rel="stylesheet"
+    data-name="vs/editor/editor.main"
+    href="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.21.2/min/vs/editor/editor.main.min.css"
+  />
+</head>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.21.2/min/vs/loader.min.js"></script>
+
+<!-- <script src="https://cdn.jsdelivr.net/npm/vscode-html-languageservice@3.1.3/lib/umd/htmlLanguageService.min.js"></script> -->
+
+<body style="margin:0px">
+  <div
+    id="editarea"
+    style="position:fixed;left:0px;top:0px;width:100%;height:100%;background:black"
+  ></div>
+</body>
+
+<script>
+  console.log("coder v6");
+
+  require.config({
+    paths: {
+      vs: "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.21.2/min/vs",
+    },
+  });
+  window.MonacoEnvironment = { getWorkerUrl: () => proxy };
+  let proxy = URL.createObjectURL(
+    new Blob(
+      [
+        `
+    self.MonacoEnvironment = {
+        baseUrl: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.21.2/min'
+    };
+    importScripts('https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.21.2/min/vs/base/worker/workerMain.min.js');
+`,
+      ],
+      { type: "text/javascript" }
+    )
+  );
+  require(["vs/editor/editor.main"], async () => {
+    // modified from https://microsoft.github.io/monaco-editor/monarch.html
+    monaco.languages.register({ id: "mySpecialLanguage" });
+    monaco.languages.setMonarchTokensProvider("mySpecialLanguage", {
+      defaultToken: "",
+      tokenPostfix: ".html",
+      ignoreCase: true,
+
+      // The main tokenizer for our languages
+      tokenizer: {
+        root: [
+          [/<!DOCTYPE/, "metatag", "@doctype"],
+          [/<!--/, "comment", "@comment"],
+          [
+            /(<)((?:[\w\-]+:)?[\w\-]+)(\s*)(\/>)/,
+            ["delimiter", "tag", "", "delimiter"],
+          ],
+          [/(<)(script)/, ["delimiter", { token: "tag", next: "@script" }]],
+          [/(<)(style)/, ["delimiter", { token: "tag", next: "@style" }]],
+          [
+            /(<)((?:[\w\-]+:)?[\w\-]+)/,
+            ["delimiter", { token: "tag", next: "@otherTag" }],
+          ],
+          [
+            /(<\/)((?:[\w\-]+:)?[\w\-]+)/,
+            ["delimiter", { token: "tag", next: "@otherTag" }],
+          ],
+          [/</, "delimiter"],
+          [/[^<]+/], // text
+        ],
+
+        doctype: [
+          [/[^>]+/, "metatag.content"],
+          [/>/, "metatag", "@pop"],
+        ],
+
+        comment: [
+          [/-->/, "comment", "@pop"],
+          [/[^-]+/, "comment.content"],
+          [/./, "comment.content"],
+        ],
+
+        otherTag: [
+          [/\/?>/, "delimiter", "@pop"],
+          [/"([^"]*)"/, "attribute.value"],
+          [/'([^']*)'/, "attribute.value"],
+          [/[\w\-]+/, "attribute.name"],
+          [/=/, "delimiter"],
+          [/[ \t\r\n]+/], // whitespace
+        ],
+
+        // -- BEGIN <script> tags handling
+
+        // After <script
+        script: [
+          [/"([^"]*)"/, "attribute.value"],
+          [/'([^']*)'/, "attribute.value"],
+          [/[\w\-]+/, "attribute.name"],
+          [/=/, "delimiter"],
+          [
+            />/,
+            {
+              token: "delimiter",
+              next: "@scriptEmbedded",
+              nextEmbedded: "text/javascript",
+            },
+          ],
+          [/[ \t\r\n]+/], // whitespace
+          [
+            /(<\/)(script\s*)(>)/,
+            ["delimiter", "tag", { token: "delimiter", next: "@pop" }],
+          ],
+        ],
+
+        // After <script ... type = $S2
+        scriptWithCustomType: [
+          [
+            />/,
+            {
+              token: "delimiter",
+              next: "@scriptEmbedded.$S2",
+              nextEmbedded: "$S2",
+            },
+          ],
+          [/"([^"]*)"/, "attribute.value"],
+          [/'([^']*)'/, "attribute.value"],
+          [/[\w\-]+/, "attribute.name"],
+          [/=/, "delimiter"],
+          [/[ \t\r\n]+/], // whitespace
+          [/<\/script\s*>/, { token: "@rematch", next: "@pop" }],
+        ],
+
+        scriptEmbedded: [
+          [
+            /<\/script/,
+            { token: "@rematch", next: "@pop", nextEmbedded: "@pop" },
+          ],
+          [/[^<]+/, ""],
+        ],
+
+        // -- END <script> tags handling
+
+        // -- BEGIN <style> tags handling
+
+        // After <style
+        style: [
+          [/type/, "attribute.name", "@styleAfterType"],
+          [/"([^"]*)"/, "attribute.value"],
+          [/'([^']*)'/, "attribute.value"],
+          [/[\w\-]+/, "attribute.name"],
+          [/=/, "delimiter"],
+          [
+            />/,
+            {
+              token: "delimiter",
+              next: "@styleEmbedded",
+              nextEmbedded: "text/css",
+            },
+          ],
+          [/[ \t\r\n]+/], // whitespace
+          [
+            /(<\/)(style\s*)(>)/,
+            ["delimiter", "tag", { token: "delimiter", next: "@pop" }],
+          ],
+        ],
+
+        // After <style ... type
+        styleAfterType: [
+          [/=/, "delimiter", "@styleAfterTypeEquals"],
+          [
+            />/,
+            {
+              token: "delimiter",
+              next: "@styleEmbedded",
+              nextEmbedded: "text/css",
+            },
+          ], // cover invalid e.g. <style type>
+          [/[ \t\r\n]+/], // whitespace
+          [/<\/style\s*>/, { token: "@rematch", next: "@pop" }],
+        ],
+
+        // After <style ... type =
+        styleAfterTypeEquals: [
+          [
+            /"([^"]*)"/,
+            { token: "attribute.value", switchTo: "@styleWithCustomType.$1" },
+          ],
+          [
+            /'([^']*)'/,
+            { token: "attribute.value", switchTo: "@styleWithCustomType.$1" },
+          ],
+          [
+            />/,
+            {
+              token: "delimiter",
+              next: "@styleEmbedded",
+              nextEmbedded: "text/css",
+            },
+          ], // cover invalid e.g. <style type=>
+          [/[ \t\r\n]+/], // whitespace
+          [/<\/style\s*>/, { token: "@rematch", next: "@pop" }],
+        ],
+
+        // After <style ... type = $S2
+        styleWithCustomType: [
+          [
+            />/,
+            {
+              token: "delimiter",
+              next: "@styleEmbedded.$S2",
+              nextEmbedded: "$S2",
+            },
+          ],
+          [/"([^"]*)"/, "attribute.value"],
+          [/'([^']*)'/, "attribute.value"],
+          [/[\w\-]+/, "attribute.name"],
+          [/=/, "delimiter"],
+          [/[ \t\r\n]+/], // whitespace
+          [/<\/style\s*>/, { token: "@rematch", next: "@pop" }],
+        ],
+
+        styleEmbedded: [
+          [
+            /<\/style/,
+            { token: "@rematch", next: "@pop", nextEmbedded: "@pop" },
+          ],
+          [/[^<]+/, ""],
+        ],
+
+        // -- END <style> tags handling
+      },
+    });
+
+    window.editor = monaco.editor.create(document.getElementById("editarea"), {
+      value: `NOTHING HERE.`,
+      language: "mySpecialLanguage",
+      theme: "vs-dark",
+      wordWrap: "on",
+      wrappingIndent: "indent",
+      //lineNumbers: 'off',
+      minimap: { enabled: false },
+      glyphMargin: false,
+      //lineDecorationsWidth: 0,
+      folding: true,
+      automaticLayout: true,
+    });
+
+    document.body.onkeydown = async function (e) {
+      if (e.code == "KeyP" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        await prettifyCode();
+      } else if (e.code == "KeyB" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        invokeGPT4();
+      } else if (
+        (e.shiftKey || e.ctrlKey || e.metaKey) &&
+        ((e.keyCode == 83 && !e.shiftKey) || e.keyCode == 13)
+      ) {
+        e.preventDefault();
+        const message = { cmd: "save", text: editor.getModel().getValue() };
+        window.parent.postMessage(message, "*");
+      }
+    };
+
+    window.addEventListener("message", function (event) {
+      var data = event.data;
+      if (data.cmd === "set") {
+        var language = data.ext === "js" ? "javascript" : "mySpecialLanguage";
+        monaco.editor.setModelLanguage(window.editor.getModel(), language);
+        window.editor.getModel().setValue(data.text);
+      }
+    });
+
+    sendMessageToParent("ready");
+  });
+
+  async function invokeGPT4() {
+    const selectedText = getSelectedText();
+    const text = selectedText || editor.getModel().getValue();
+
+    const openai_key = localStorage.openai_key;
+
+    const requestBody = {
+      model: "gpt-4",
+      messages: [
+        // {
+        //   role: "system",
+        //   content:
+        //     "You are an intelligent and good natured programming assistant, concise when all that is required is a bit of code.",
+        // },
+        { role: "user", content: text },
+      ],
+      stream: true,
+    };
+
+    const abortController = new AbortController();
+    const signal = abortController.signal;
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${openai_key}`,
+      },
+      body: JSON.stringify(requestBody),
+      signal,
+    });
+
+    // Create the diff editor and display it
+    const output = displayDiff(
+      "",
+      text,
+      selectedText ? editor.getSelection() : null,
+      abortController
+    );
+    const diffEditor = output.diffEditor;
+
+    const scrollToBottom = async (editor) => {
+      const lineCount = editor.getModel().getLineCount();
+      editor.revealLine(lineCount, monaco.editor.ScrollType.Smooth);
+    };
+
+    if (response.status === 200) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let result = "";
+      let buffer = "";
+
+      async function processStream({ done, value }) {
+        if (done) {
+          console.log("Stream complete.");
+          return;
+        }
+
+        value = decoder.decode(value, { stream: true });
+        buffer += value;
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const jsonLine = line.slice("data: ".length);
+
+            if (jsonLine === "[DONE]") {
+              console.log("Stream done.");
+            } else {
+              try {
+                const parsedLine = JSON.parse(jsonLine);
+                const content = parsedLine?.choices?.[0]?.delta?.content;
+
+                if (content) {
+                  console.log(`content: ${content}`);
+                  result += content;
+
+                  const startPosition = diffEditor
+                    .getModel()
+                    .modified.getPositionAt(
+                      diffEditor.getModel().modified.getValueLength()
+                    );
+                  const endPosition = diffEditor
+                    .getModel()
+                    .modified.getPositionAt(
+                      diffEditor.getModel().modified.getValueLength() +
+                        content.length
+                    );
+                  const range = new monaco.Range(
+                    startPosition.lineNumber,
+                    startPosition.column,
+                    endPosition.lineNumber,
+                    endPosition.column
+                  );
+
+                  diffEditor.getModel().modified.applyEdits([
+                    {
+                      identifier: { major: 0, minor: 0 },
+                      forceMoveMarkers: true,
+                      range: range,
+                      text: content,
+                    },
+                  ]);
+                }
+              } catch (err) {
+                console.error("Error parsing line:", err);
+              }
+            }
+          } else if (line) {
+            console.log(`Unrecognized line: [${line}]`);
+          }
+        }
+
+        await reader.read().then(processStream);
+      }
+
+      await reader.read().then(processStream);
+    } else {
+      throw new Error("Error: Unable to fetch event stream");
+    }
+  }
+
+  function displayDiff(
+    aiResponse,
+    originalText,
+    originalSelection,
+    abortController
+  ) {
+    var output = document.createElement("div");
+    output.style.position = "fixed";
+    output.style.left = "0px";
+    output.style.top = "0px";
+    output.style.right = "0px";
+    output.style.bottom = "0px";
+    document.body.append(output);
+
+    // Send a message to the parent that the diff has opened
+    sendMessageToParent("diffOpened");
+
+    var originalModel = monaco.editor.createModel(originalText);
+    var modifiedModel = monaco.editor.createModel(aiResponse);
+
+    var diffEditor = monaco.editor.createDiffEditor(output, {
+      theme: "vs-dark",
+
+      //   wordWrap: "on",
+      wordWrap: "wordWrapColumn",
+      wordWrapColumn: 80, // Adjust as needed
+
+      wrappingIndent: "indent",
+      automaticLayout: true,
+    });
+    diffEditor.setModel({
+      original: originalModel,
+      modified: modifiedModel,
+    });
+
+    //     wordWrap: "wordWrapColumn",
+    //     wordWrapColumn: 80, // Adjust as needed
+
+    //   do you have any idea how to get the diff display to not require horizontal scrolling? (where it wraps lines onto the next line.. I've seen it do it in a regular window, but not sure how with a diff window..).. I have "wordWrap" turned "on"..
+
+    var acceptButton = document.createElement("button");
+    acceptButton.innerHTML = "Accept";
+    acceptButton.style.position = "absolute";
+    acceptButton.style.bottom = "10px";
+    acceptButton.style.left = "10px";
+    acceptButton.onclick = () => {
+      aiResponse = diffEditor.getModel().modified.getValue();
+      if (originalSelection) {
+        // Replace selected text with AI response
+        editor.executeEdits("", [
+          {
+            identifier: "replaceSelectedText",
+            range: originalSelection,
+            text: aiResponse,
+            forceMoveMarkers: true,
+          },
+        ]);
+      } else editor.getModel().setValue(aiResponse);
+
+      // Send a message to the parent that the diff has closed
+      sendMessageToParent("diffClosed");
+
+      output.remove();
+    };
+    output.appendChild(acceptButton);
+
+    var cancelButton = document.createElement("button");
+    cancelButton.innerHTML = "Cancel";
+    cancelButton.style.position = "absolute";
+    cancelButton.style.bottom = "10px";
+    cancelButton.style.right = "10px";
+    cancelButton.onclick = () => {
+      abortController.abort();
+
+      // Send a message to the parent that the diff has closed
+      sendMessageToParent("diffClosed");
+
+      output.remove();
+    };
+    output.appendChild(cancelButton);
+
+    // Return the output element and diffEditor object for further manipulation
+    return {
+      diffEditor: diffEditor,
+    };
+  }
+
+  function getSelectedText() {
+    const editorSelection = editor.getSelection();
+    const selectedText = editor.getModel().getValueInRange(editorSelection);
+    return selectedText;
+  }
+
+  async function prettifyCode() {
+    const selectedText = getSelectedText();
+    const text = selectedText || editor.getModel().getValue();
+    const isHTML = /^\s*</.test(text);
+
+    // Worker code as an inline string
+    const workerCode = `
+    self.importScripts(
+      "https://cdn.jsdelivr.net/npm/prettier@2.8.7/standalone.js",
+      "https://cdn.jsdelivr.net/npm/prettier@2.8.7/parser-babel.js",
+      "https://cdn.jsdelivr.net/npm/prettier@2.8.7/parser-html.js"
+    );
+
+    self.addEventListener("message", (event) => {
+      const { code, isHTML } = event.data;
+      const parser = isHTML ? "html" : "babel";
+      const prettyText = prettier.format(code, {
+        parser: parser,
+        plugins: prettierPlugins,
+      });
+
+      self.postMessage(prettyText);
+    });
+  `;
+
+    // Create a Blob from the worker code
+    const blob = new Blob([workerCode], { type: "application/javascript" });
+
+    // Create a data URL from the Blob
+    const workerUrl = URL.createObjectURL(blob);
+
+    // Initialize the worker with the data URL
+    const worker = new Worker(workerUrl);
+
+    worker.onmessage = (event) => {
+      const prettyText = event.data;
+
+      if (selectedText) {
+        const selection = editor.getSelection();
+        editor.executeEdits("", [
+          {
+            identifier: "replaceSelectedText",
+            range: selection,
+            text: prettyText,
+            forceMoveMarkers: true,
+          },
+        ]);
+      } else {
+        editor.getModel().setValue(prettyText);
+      }
+
+      worker.terminate();
+    };
+
+    worker.onerror = (error) => {
+      console.error("Worker error:", error);
+      worker.terminate();
+    };
+
+    worker.postMessage({ code: text, isHTML });
+  }
+
+  function sendMessageToParent(cmd) {
+    const message = { cmd };
+    window.parent.postMessage(message, "*"); // Replace '*' with the actual origin if possible
+  }
+</script>
