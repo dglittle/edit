@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link
+      rel="stylesheet"
+      data-name="vs/editor/editor.main"
+      href="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.21.2/min/vs/editor/editor.main.min.css"
+    />
+  </head>
+
+  <script src="https://sdk.amazonaws.com/js/aws-sdk-2.604.0.min.js"></script>
+
+  <body style="margin: 0;">
+    <div
+      id="viewarea"
+      style="position:fixed;right:0;top:0;width:50%;height:100%;background:white"
+    ></div>
+    <div
+      id="editarea"
+      style="position:fixed;left:0;top:0;width:50%;height:100%;background:black"
+    >
+      <iframe
+        id="coder-iframe"
+        style="width:100%;height:100%;border:none;"
+      ></iframe>
+    </div>
+  </body>
+
+  <script>
+    console.log("edit v0.4.2");
+
+    let url = new URL(location.href);
+
+    let [key, hold] = location.search
+      .slice(1)
+      .split("?")
+      .map(decodeURIComponent);
+
+    let iframe = document.getElementById("coder-iframe");
+
+    window.addEventListener("message", async function (event) {
+      if (event.source !== iframe.contentWindow) return;
+
+      if (event.data.cmd == "ready") {
+        var ext = key.match(/\.([^\.]+)$/)?.[1];
+        if (ext == "js") ext = "javascript";
+
+        if (key) {
+          var x = await fetch("/" + key);
+          let code = x.ok ? await x.text() : "nothing here...";
+          iframe.contentWindow.postMessage(
+            { cmd: "set", ext: ext || "html", text: code },
+            "*"
+          );
+
+          if (!hold) {
+            console.log("not has hold!!");
+            draw_viewarea();
+          } else {
+            console.log("has hold!!");
+          }
+        }
+        return;
+      }
+
+      // Handling diffOpened and diffClosed commands
+      if (event.data.cmd === "diffOpened") {
+        editarea.style.width = "100%";
+      } else if (event.data.cmd === "diffClosed") {
+        editarea.style.width = "50%";
+      } else if (event.data.cmd === "save") {
+        AWS.config.credentials = new AWS.Credentials(
+          localStorage.aws_id,
+          localStorage.aws_secret
+        );
+        var s3 = new AWS.S3({ region: localStorage.aws_region });
+
+        await s3
+          .putObject({
+            Bucket: url.hostname,
+            Key: key,
+            Body: event.data.text,
+            ContentType: "text/html",
+            CacheControl: "no-cache",
+          })
+          .promise();
+
+        draw_viewarea();
+      }
+    });
+
+    iframe.src = "/coder?5";
+
+    function draw_viewarea() {
+      viewarea.innerHTML = "";
+      var f = document.createElement("iframe");
+      f.setAttribute(
+        "sandbox",
+        "allow-same-origin allow-scripts allow-popups allow-forms allow-presentation allow-modals allow-downloads-without-user-activation allow-downloads"
+      );
+      f.setAttribute("src", "/" + key);
+      f.setAttribute("frameBorder", "0");
+      f.style.width = "100%";
+      f.style.height = "100%";
+      viewarea.append(f);
+    }
+  </script>
+</html>
