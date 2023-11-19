@@ -8,3 +8,4 @@ a kind of minimalist content management system
   bucket = 'CHANGE_ME'
   ```
   
+localStorage.ec2_host = `example.com:60101`
