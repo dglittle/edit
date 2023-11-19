@@ -1,0 +1,205 @@
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ec2</title>
+  <link
+    rel="stylesheet"
+    data-name="vs/editor/editor.main"
+    href="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.21.2/min/vs/editor/editor.main.min.css"
+  />
+</head>
+
+<script src="https://sdk.amazonaws.com/js/aws-sdk-2.604.0.min.js"></script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.21.2/min/vs/loader.min.js"></script>
+
+<body style="margin:0px">
+  <button
+    id="run_button"
+    style="position:fixed;right:0px;top:0px;width:50%;height:48px;"
+  >
+    run
+  </button>
+  <div
+    id="stdout"
+    style="position:fixed;right:0px;top:48px;width:50%;height:calc(100% - 48px);background:lightgrey"
+  ></div>
+  <div
+    id="editarea"
+    style="position:fixed;left:0px;top:0px;width:50%;height:100%;background:black"
+  >
+    <iframe
+      id="coder-iframe"
+      style="width:100%;height:100%;border:none;"
+    ></iframe>
+  </div>
+</body>
+<script>
+  console.log(`ec2 v0.1.3`);
+
+  let iframe = document.getElementById("coder-iframe");
+
+  let key = decodeURIComponent(window.location.search.slice(1)) || "test.js";
+
+  require.config({
+    paths: {
+      vs: "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.21.2/min/vs",
+    },
+  });
+  window.MonacoEnvironment = { getWorkerUrl: () => proxy };
+  let proxy = URL.createObjectURL(
+    new Blob(
+      [
+        `
+    self.MonacoEnvironment = {
+        baseUrl: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.21.2/min'
+    };
+    importScripts('https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.21.2/min/vs/base/worker/workerMain.min.js');
+`,
+      ],
+      { type: "text/javascript" }
+    )
+  );
+
+  let monaco_promise = new Promise((done) =>
+    require(["vs/editor/editor.main"], done)
+  );
+
+  (async () => {
+    await monaco_promise;
+
+    AWS.config.credentials = new AWS.Credentials(
+      localStorage.aws_id,
+      localStorage.aws_secret
+    );
+
+    var s3 = new AWS.S3({ region: localStorage.ec2_bucket_region });
+
+    var stdout = monaco.editor.create(document.getElementById("stdout"), {
+      value: ``,
+      language: "mySpecialLanguage",
+      theme: "vs-dark",
+      wordWrap: "on",
+      wrappingIndent: "indent",
+      lineNumbers: "off",
+      minimap: { enabled: false },
+      glyphMargin: false,
+      lineDecorationsWidth: 0,
+      folding: false,
+      automaticLayout: true,
+    });
+
+    window.addEventListener("message", async function (event) {
+      if (event.source !== iframe.contentWindow) return;
+
+      if (event.data.cmd == "ready") {
+        try {
+          iframe.contentWindow.postMessage(
+            {
+              cmd: "set",
+              ext: "js",
+              text:
+                "" +
+                (
+                  await s3
+                    .getObject({ Bucket: localStorage.ec2_bucket, Key: key })
+                    .promise()
+                ).Body,
+            },
+            "*"
+          );
+        } catch (e) {
+          console.log(`e = ` + e);
+          iframe.contentWindow.postMessage(
+            { cmd: "set", ext: "js", text: "nothing here.." },
+            "*"
+          );
+          stdout.getModel().setValue("output would appear here..");
+        }
+        return;
+      }
+
+      // Handling diffOpened and diffClosed commands
+      if (event.data.cmd === "diffOpened") {
+        editarea.style.width = "100%";
+      } else if (event.data.cmd === "diffClosed") {
+        editarea.style.width = "50%";
+      } else if (event.data.cmd === "save") {
+        let d = make_html(
+          `<div style="position:fixed;left:0px;bottom:0px;background:rgb(0,128,0);color:rgb(0,255,0)">saving..</div>`
+        );
+        document.body.append(d);
+
+        await s3
+          .putObject({
+            Bucket: localStorage.ec2_bucket,
+            Key: key,
+            Body: event.data.text,
+            ContentType: "text/html",
+            CacheControl: "no-cache",
+          })
+          .promise();
+
+        d.style.opacity = 0.3;
+        setTimeout(() => d.remove(), 500);
+      }
+    });
+
+    iframe.src = "/coder";
+
+    run_button.onclick = async () => {
+      stdout.getModel().setValue("");
+      await fetch("https://" + localStorage.ec2_host, {
+        method: "post",
+        body: JSON.stringify({ cmd: "eval", key, pass: localStorage.ec2_pass }),
+      });
+    };
+
+    connect();
+    async function connect() {
+      let ws = new WebSocket(`wss://${localStorage.ec2_host}/${key}`);
+      ws.onopen = () => stdout.getModel().setValue("");
+      ws.onclose = () => setTimeout(connect, 3000);
+      ws.onmessage = (m) => {
+        let view_state = stdout.saveViewState();
+        let end_pos = stdout
+          .getModel()
+          .getPositionAt(stdout.getModel().getValue().length);
+        stdout.revealLine(end_pos.lineNumber);
+        let end_state = stdout.saveViewState();
+        let is_at_end =
+          view_state.viewState.firstPosition.lineNumber ==
+          end_state.viewState.firstPosition.lineNumber;
+
+        stdout.executeEdits("my-source", [
+          {
+            identifier: { major: 1, minor: 1 },
+            range: new monaco.Range(
+              end_pos.lineNumber,
+              end_pos.column,
+              end_pos.lineNumber,
+              end_pos.column
+            ),
+            text: m.data,
+            forceMoveMarkers: true,
+          },
+        ]);
+
+        if (is_at_end) {
+          end_pos = stdout
+            .getModel()
+            .getPositionAt(stdout.getModel().getValue().length);
+          stdout.revealLine(end_pos.lineNumber);
+        } else {
+          stdout.restoreViewState(view_state);
+        }
+      };
+    }
+  })();
+
+  function make_html(html) {
+    let d = document.createElement("div");
+    d.innerHTML = html;
+    return d.firstChild;
+  }
+</script>
